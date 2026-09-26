@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "skill": "ascend-vit-fia-bsnd",
+  "layout": "BSND",
+  "image": "quay.io/ascend/vllm-ascend:v0.23.0",
+  "image_digest": "sha256:471744200c5d0c768c1f6c6a6816dcae0fd551de2487d4d129b6fb750024ce6a",
+  "architecture": "arm64",
+  "container_source_root": "/vllm-workspace/vllm-ascend",
+  "target": "vllm_ascend/ops/mm_encoder_attention.py",
+  "original_sha256": "e8d7c15a1fd2d474a6a871ba2a82d86a4b0a83d1342dda08a1bb02c4ec7aeb60",
+  "patched_sha256": "d937d35be43decfc3de0e311da05f4d0fa60244e4774254ea9286a847e11d4a9",
+  "patch_sha256": "6fadadd46f9a87209a48a7f81540eb794a4c28aa29545829ea19be2433aec4bb",
+  "known_variants": {
+    "d937d35be43decfc3de0e311da05f4d0fa60244e4774254ea9286a847e11d4a9": "BSND",
+    "33fd7f9638269954e5787d64c61eb91ce92ff6c44a9a1b4c7c655ebd47ab53a9": "BNSD",
+    "a11a75d39cbc4a3c9c9cce6a78fb511410697eb43427dd80471d383ee14169a7": "BNSD_BSND"
+  }
+}

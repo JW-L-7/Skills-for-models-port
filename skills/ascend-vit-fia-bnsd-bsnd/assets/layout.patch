@@ -1,0 +1,42 @@
+--- a/vllm_ascend/ops/mm_encoder_attention.py
++++ b/vllm_ascend/ops/mm_encoder_attention.py
+@@ -211,7 +211,38 @@
+             cudagraph_mm_encoder=False,
+         )
+         q, k, v, origin_head_dim = self._maybe_pad_qkv(query, key, value)
+-        context_layer = self._run_vit_fia(q, k, v, actual_seq_lengths_q, actual_seq_lengths_kv)
++        # Layout experiment: retain TND for varlen, GQA, and single-token inputs.
++        use_fixed_layout = (
++            q.shape[0] > 1
++            and q.shape == k.shape == v.shape
++            and self.num_heads == self.num_kv_heads
++            and actual_seq_lengths_q == [q.shape[0]]
++            and actual_seq_lengths_kv == [k.shape[0]]
++        )
++        if use_fixed_layout:
++            q_layout = q.transpose(0, 1).unsqueeze(0).contiguous()
++            k_layout = k.transpose(0, 1).unsqueeze(0).contiguous()
++            v_layout = v.transpose(0, 1).unsqueeze(0).contiguous()
++            context_layer, _ = torch_npu.npu_fused_infer_attention_score(
++                query=q_layout,
++                key=k_layout,
++                value=v_layout,
++                atten_mask=None,
++                block_table=None,
++                input_layout="BNSD_BSND",
++                block_size=FIA_BLOCK_SIZE,
++                actual_seq_lengths=actual_seq_lengths_q,
++                actual_seq_lengths_kv=actual_seq_lengths_kv,
++                num_key_value_heads=self.num_kv_heads,
++                num_heads=self.num_heads,
++                scale=self.scale,
++                sparse_mode=0,
++                pre_tokens=SWA_INT_MAX,
++                next_tokens=SWA_INT_MAX,
++            )
++            context_layer = context_layer.squeeze(0)
++        else:
++            context_layer = self._run_vit_fia(q, k, v, actual_seq_lengths_q, actual_seq_lengths_kv)
+         context_layer = self._maybe_unpad_output(context_layer, origin_head_dim)
+         return self._restore_batch_layout(
+             context_layer,
