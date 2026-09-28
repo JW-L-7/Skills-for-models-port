@@ -1,0 +1,109 @@
+--- a/vllm_ascend/ops/mm_encoder_attention.py
++++ b/vllm_ascend/ops/mm_encoder_attention.py
+@@ -35,7 +35,6 @@
+     get_encoder_forward_context,
+     get_encoder_graph_params,
+     maybe_compute_actual_seq_lengths,
+-    update_encoder_graph_workspace,
+ )
+ 
+ MIN_PAD_SIZE: int = 64
+@@ -161,6 +160,7 @@
+         out: torch.Tensor | None = None,
+         softmax_lse: torch.Tensor | None = None,
+         workspace: torch.Tensor | None = None,
++        input_layout: str = "TND",
+     ) -> torch.Tensor:
+         fia_kwargs = dict(
+             query=query,
+@@ -168,7 +168,7 @@
+             value=value,
+             atten_mask=None,
+             block_table=None,
+-            input_layout="TND",
++            input_layout=input_layout,
+             block_size=FIA_BLOCK_SIZE,
+             actual_seq_lengths=actual_seq_lengths_q,
+             actual_seq_lengths_kv=actual_seq_lengths_kv,
+@@ -245,11 +245,33 @@
+             cudagraph_mm_encoder=True,
+         )
+         q, k, v, origin_head_dim = self._maybe_pad_qkv(query, key, value)
+-
+-        out = torch.empty_like(q)
++        num_query_tokens, num_kv_tokens = q.shape[0], k.shape[0]
++        input_layout = "TND"
++        use_fixed_layout = (
++            num_query_tokens > 1
++            and q.shape == k.shape == v.shape
++            and self.num_heads == self.num_kv_heads
++            and actual_seq_lengths_q == [num_query_tokens]
++            and actual_seq_lengths_kv == [num_kv_tokens]
++        )
++        if use_fixed_layout:
++            input_layout = 'BSND'
++            q = q.unsqueeze(0).contiguous()
++            k = k.unsqueeze(0).contiguous()
++            v = v.unsqueeze(0).contiguous()
++        if use_fixed_layout:
++            out = torch.empty_like(q)
++        else:
++            out = torch.empty_like(q)
+         softmax_lse = torch.empty(1, dtype=q.dtype, device=q.device)
+ 
+-        workspace = params.workspaces.get(token_budget)
++        # Layout and shape are immutable for a captured task. Keep its workspace
++        # separate from TND and from other attention shapes at the same budget.
++        workspace_key = (
++            token_budget, input_layout, tuple(q.shape), tuple(k.shape), tuple(v.shape),
++            q.dtype, self.num_heads, self.num_kv_heads, self.scale,
++        )
++        workspace = params.layout_workspaces.get(workspace_key)
+         if workspace is None:
+             workspace = torch_npu._npu_fused_infer_attention_score_get_max_workspace(
+                 query=q,
+@@ -257,7 +279,7 @@
+                 value=v,
+                 atten_mask=None,
+                 block_table=None,
+-                input_layout="TND",
++                input_layout=input_layout,
+                 block_size=FIA_BLOCK_SIZE,
+                 actual_seq_lengths=actual_seq_lengths_q,
+                 actual_seq_lengths_kv=actual_seq_lengths_kv,
+@@ -268,7 +290,7 @@
+                 pre_tokens=SWA_INT_MAX,
+                 next_tokens=SWA_INT_MAX,
+             )
+-            update_encoder_graph_workspace(token_budget, workspace)
++            params.layout_workspaces[workspace_key] = workspace
+ 
+         stream = torch_npu.npu.current_stream()
+         event = torch.npu.ExternalEvent()
+@@ -285,6 +307,7 @@
+             out=out,
+             softmax_lse=softmax_lse,
+             workspace=workspace,
++            input_layout=input_layout,
+         )
+         handle = torch.npu.graph_task_group_end(stream)
+ 
+@@ -300,12 +323,17 @@
+             self.scale,
+             weak_ref_tensors(out),
+             weak_ref_tensors(softmax_lse),
++            input_layout,
++            num_query_tokens,
++            num_kv_tokens,
++            weak_ref_tensors(workspace),
+         )
+         params.attn_params[token_budget].append(packed)
+         params.events[token_budget].append(event)
+         params.handles[token_budget].append(handle)
+ 
+-        context_layer = self._maybe_unpad_output(out, origin_head_dim)
++        context_layer = out.squeeze(0) if use_fixed_layout else out
++        context_layer = self._maybe_unpad_output(context_layer, origin_head_dim)
+         return self._restore_batch_layout(
+             context_layer,
+             bsz=bsz,

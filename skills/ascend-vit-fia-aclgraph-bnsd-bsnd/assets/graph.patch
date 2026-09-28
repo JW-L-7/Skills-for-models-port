@@ -1,0 +1,132 @@
+--- a/vllm_ascend/worker/encoder_acl_graph.py
++++ b/vllm_ascend/worker/encoder_acl_graph.py
+@@ -43,6 +43,7 @@
+     # need graph params separated by (path, token_budget).
+     events: dict[int, list[torch.npu.ExternalEvent]] = field(default_factory=dict)
+     workspaces: dict[int, torch.Tensor | None] = field(default_factory=dict)
++    layout_workspaces: dict[tuple, torch.Tensor] = field(default_factory=dict)
+     handles: dict[int, list[Any]] = field(default_factory=dict)
+     # Flattened per-forward insertion order (one entry per ViT block invocation).
+     attn_params: dict[int, list[tuple]] = field(default_factory=dict)
+@@ -174,6 +175,27 @@
+     return actual, [end * ratio for end in actual]
+ 
+ 
++def fixed_layout_seq_lengths(cu_seqlens: torch.Tensor | None, capacity: int) -> list[int] | None:
++    """Accept one real sequence; ignore repeated endpoints / trailing zero padding.
++
++    Unlike TND metadata, fixed-layout lengths are per-batch lengths. Never append
++    the captured budget: padded tokens must not become real keys or another image.
++    """
++    if cu_seqlens is None:
++        return None
++    flat = cu_seqlens.detach().cpu().view(-1).tolist()
++    if len(flat) < 2 or flat[0] != 0 or not 1 < flat[1] <= capacity:
++        return None
++    length = flat[1]
++    zero_padding = False
++    for endpoint in flat[2:]:
++        if endpoint == 0:
++            zero_padding = True
++        elif endpoint != length or zero_padding:
++            return None
++    return [length]
++
++
+ def update_encoder_graph_params(
+     update_stream: torch.npu.Stream,
+     token_budget: int,
+@@ -192,7 +214,6 @@
+     handles = params.handles[token_budget]
+     events = params.events[token_budget]
+     attn_blocks = params.attn_params[token_budget]
+-    workspace = params.workspaces.get(token_budget)
+ 
+     if len(handles) != len(events) or len(handles) != len(attn_blocks):
+         raise RuntimeError(
+@@ -215,18 +236,26 @@
+                 scale,
+                 output,
+                 softmax_lse,
+-            ) = packed
+-
+-            num_query_tokens = query.shape[0]
+-            num_kv_tokens = key.shape[0]
+-            cu_seqlens_cpu = get_encoder_forward_context().cu_seqlens_cpu
+-
+-            actual_seq_lengths_q, actual_seq_lengths_kv = maybe_compute_actual_seq_lengths(
+-                cu_seqlens_cpu,
++                input_layout,
+                 num_query_tokens,
+                 num_kv_tokens,
+-                cudagraph_mm_encoder=True,
+-            )
++                workspace,
++            ) = packed
++
++            cu_seqlens_cpu = get_encoder_forward_context().cu_seqlens_cpu
++
++            if input_layout == "TND":
++                actual_seq_lengths_q, actual_seq_lengths_kv = maybe_compute_actual_seq_lengths(
++                    cu_seqlens_cpu,
++                    num_query_tokens,
++                    num_kv_tokens,
++                    cudagraph_mm_encoder=True,
++                )
++            else:
++                actual_seq_lengths_q = fixed_layout_seq_lengths(cu_seqlens_cpu, num_query_tokens)
++                actual_seq_lengths_kv = fixed_layout_seq_lengths(cu_seqlens_cpu, num_kv_tokens)
++                if actual_seq_lengths_q is None or actual_seq_lengths_kv is None:
++                    raise RuntimeError("Fixed-layout encoder graph received incompatible replay metadata")
+ 
+             torch.npu.graph_task_update_begin(update_stream, handle)
+             torch_npu.npu_fused_infer_attention_score.out(
+@@ -235,7 +264,7 @@
+                 value=value,
+                 atten_mask=attn_mask,
+                 block_table=block_table,
+-                input_layout="TND",
++                input_layout=input_layout,
+                 block_size=block_size,
+                 actual_seq_lengths=actual_seq_lengths_q,
+                 actual_seq_lengths_kv=actual_seq_lengths_kv,
+@@ -243,6 +272,8 @@
+                 num_heads=num_heads,
+                 scale=scale,
+                 sparse_mode=0,
++                pre_tokens=2147483647,
++                next_tokens=2147483647,
+                 workspace=workspace,
+                 out=[output, softmax_lse],
+             )
+@@ -383,6 +414,24 @@
+         if update_stream is None:
+             update_stream = torch.npu.Stream()
+ 
++        # Check admission before replay submits tasks waiting on update events.
++        # The upstream caller asserts a non-None graph-shaped output. Execute
++        # the same encoder entrypoint eagerly on real (unpadded) replay inputs
++        # rather than returning None or replaying a graph with wrong boundaries.
++        params = get_encoder_graph_params()
++        if params is not None:
++            for packed in params.attn_params.get(token_budget, []):
++                if packed[11] != "TND" and (
++                    replay.values.get("cu_seqlens") is None
++                    or fixed_layout_seq_lengths(cu_seqlens_cpu, packed[12]) is None
++                    or fixed_layout_seq_lengths(cu_seqlens_cpu, packed[13]) is None
++                ):
++                    self.graph_misses += num_items
++                    with set_encoder_forward_context(token_budget, False), torch.inference_mode():
++                        if vllm_version_is("0.23.0"):
++                            return self.model.encoder_cudagraph_forward(dict(replay.values))
++                        return self.model.encoder_cudagraph_forward(dict(replay.values), path=path)
++
+         graph_meta.graph.replay()
+ 
+         with set_encoder_forward_context(
+@@ -404,3 +453,5 @@
+         if ws is None:
+             continue
+         params.workspaces[budget] = weak_ref_tensors(ws)
++    for key, ws in list(params.layout_workspaces.items()):
++        params.layout_workspaces[key] = weak_ref_tensors(ws)

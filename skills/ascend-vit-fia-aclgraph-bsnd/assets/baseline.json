@@ -1,0 +1,52 @@
+{
+  "schema_version": 2,
+  "skill": "ascend-vit-fia-aclgraph-bsnd",
+  "layout": "BSND",
+  "image": "quay.io/ascend/vllm-ascend:v0.23.0",
+  "image_digest": "sha256:471744200c5d0c768c1f6c6a6816dcae0fd551de2487d4d129b6fb750024ce6a",
+  "architecture": "arm64",
+  "container_source_root": "/vllm-workspace/vllm-ascend",
+  "files": [
+    {
+      "target": "vllm_ascend/ops/mm_encoder_attention.py",
+      "patch": "assets/attention.patch",
+      "original_sha256": "e8d7c15a1fd2d474a6a871ba2a82d86a4b0a83d1342dda08a1bb02c4ec7aeb60",
+      "patched_sha256": "29f3ad86577efe0efce5122dccd8a69f4a63857ddcd74e2557eb21501b4827dc",
+      "patch_sha256": "97a45894a982df53fef56c30c273221b60bb6187a0710de70b4be77345a344cf",
+      "known_variants": {
+        "29f3ad86577efe0efce5122dccd8a69f4a63857ddcd74e2557eb21501b4827dc": [
+          "aclgraph-BSND"
+        ],
+        "20014fa507e062420d0040102fd83577701862a0ea9a9f14a4540a40911f896c": [
+          "aclgraph-BNSD"
+        ],
+        "77c05fc6a0c8ebd3122d4b9462e2ec21565c6ead80c9d0f375ce7ed13ba470a3": [
+          "aclgraph-BNSD_BSND"
+        ],
+        "33fd7f9638269954e5787d64c61eb91ce92ff6c44a9a1b4c7c655ebd47ab53a9": [
+          "eager-BNSD"
+        ],
+        "d937d35be43decfc3de0e311da05f4d0fa60244e4774254ea9286a847e11d4a9": [
+          "eager-BSND"
+        ],
+        "a11a75d39cbc4a3c9c9cce6a78fb511410697eb43427dd80471d383ee14169a7": [
+          "eager-BNSD_BSND"
+        ]
+      }
+    },
+    {
+      "target": "vllm_ascend/worker/encoder_acl_graph.py",
+      "patch": "assets/graph.patch",
+      "original_sha256": "09e9c422a592b54469b878b9f268a37eb9327f69136236fa4da3df7d4fb89a93",
+      "patched_sha256": "724b1cb9bd2c94ac14b6bd09a6979b2218caaf33c6bbc26aa15b9f08e1bab656",
+      "patch_sha256": "c0886ee8657b555bf7298e29c5144fbe9de7af0cf82b3a277e9e4d1bd71e77a5",
+      "known_variants": {
+        "724b1cb9bd2c94ac14b6bd09a6979b2218caaf33c6bbc26aa15b9f08e1bab656": [
+          "aclgraph-BSND",
+          "aclgraph-BNSD",
+          "aclgraph-BNSD_BSND"
+        ]
+      }
+    }
+  ]
+}
